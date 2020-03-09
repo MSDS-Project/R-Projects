@@ -1,0 +1,453 @@
+---
+title: "MSDS 662 Week 8"
+author: "Cheryl Hoffer"
+date: "April 28, 2019"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+##Project Description
+
+Use the Wisconsin Breast Cancer data set found at https://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+(Original) and use deep learning from H2o package to train your data set and classify images as benign or malignant. Investigate the prediction performance on multiple runs using H2o package and experimenting by varying parameters such as numbers of layers, numbers of nodes, etc.,).<br>
+
+
+Import the libraries that will be needed.<br>
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+suppressMessages(library(h2o))
+suppressMessages(library(caret))
+suppressMessages(library(mlbench))
+suppressMessages(library(ggplot2))
+suppressMessages(library(reshape2))
+suppressMessages(library(DEEPR))
+```
+
+###Set up h2o
+
+Make sure there is only one instance of h2o. If h2o is present, detach the package and reinstall it. Then start a new h2o cluster. <br> 
+
+```{r}
+# The following two commands remove any previously installed H2O packages for R.
+if ("package:h2o" %in% search()) { detach("package:h2o", unload=TRUE) }
+if ("h2o" %in% rownames(installed.packages())) { remove.packages("h2o") }
+
+# Next, we download packages that H2O depends on.
+pkgs <- c("RCurl","jsonlite")
+for (pkg in pkgs) {
+  if (! (pkg %in% rownames(installed.packages()))) { install.packages(pkg) }
+}
+
+# Now we download, install and initialize the H2O package for R.
+install.packages("h2o", type="source", repos="http://h2o-release.s3.amazonaws.com/h2o/rel-yates/2/R")
+
+# Finally, let's load H2O and start up an H2O cluster
+library(h2o)
+h2o.init()   
+```
+
+
+## The Data
+
+Read in the Wisconsin breast cancer data and assign labels to each column. Look at the data. Remove the column with the sample number since it is not important for our analysis. Set the Class as a factor. Class is the indication of whether the breast cancer is benign (2) or malignant (4). <br>
+
+```{r}
+bc_wi <- read.csv("breast-cancer-wisconsin.data", header = FALSE, na.strings = '?')
+colnames(bc_wi) = c("Sample_Number", "Clump_Thickness", "Uniformity_of_Cell_Size", "Uniformity_of_Cell_Shape", "Marginal_Adhesion", "Single_Epithelial_Cell_Size", "Bare_Nuclei", "Bland_Chromatin", "Normal_Nucleoli", "Mitoses", "Class")
+
+head(bc_wi)
+dim(bc_wi)
+
+dat1 <- bc_wi[, -1]  # remove the ID column
+dat1[, 10] <- as.factor(dat1[, 10])
+summary(dat1)
+```
+
+### Data Preparation
+
+Remove any rows with null values.<br>
+
+```{r}
+#remove rows with null values
+dat <- dat1[complete.cases(dat1),]
+dim(dat)
+summary(dat)
+```
+
+We have removed 16 data records with null values. The data set size has been reduced from 699 records to 683 records.<br>
+
+### Create Training and Test Data Sets
+
+We will split the data into a training and a test dataset. We will use 80% for a training set and 20% for a test set and look at the dimensions of the datasets. <br>
+
+```{r}
+set.seed(3465) 
+ind <- sample(2, nrow(dat), replace=TRUE, prob=c(0.8, 0.2)) 
+# use the array, ind, to define the training and test sets 
+bc_train <- dat[ind == 1, 1:10] 
+dim(bc_train)
+
+bc_test <- dat[ind == 2, 1:10] 
+dim(bc_test)
+
+bc_train_labels <- dat[ind == 1, 10] 
+#str(bc_train_labels)
+
+bc_test_labels <- dat[ind == 2, 10]
+#str(bc_test_labels)
+```
+
+Put data into h2o data type and look at the first few records of each data set.<br>
+
+
+```{r, include=FALSE}
+#Check h2o status cluster info to trigger the connection.
+h2o.clusterStatus()
+h2o.clusterInfo()
+
+train_data <- as.h2o(bc_train)
+train_data[, 10] <- as.factor(train_data[, 10])
+head(train_data)
+
+test_data <- as.h2o(bc_test)
+test_data[, 10] <- as.factor(test_data[, 10])
+head(test_data)
+```
+
+Look at a summary of the test and train datasets.<br>
+
+```{r}
+summary(train_data)
+summary(test_data)
+```
+
+We have 557 records in the training data set with 361 records in class 2 and 196 records in class 4, and 126 records in the testing set with 83 records in class 2 and 43 records in class 4. <br>
+
+## Build 80/20 Model
+
+Build an h2o model from the breast cancer data. We will use an input dropout ratio of 0.2 and three layers with hidden dropout ratios of 0.5 for each layer. <br>
+
+```{r}
+bc_model <- 
+  h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                   y = 10,   # column number for label
+                   training_frame = train_data,
+                   activation = "TanhWithDropout", # or 'Tanh'
+                   input_dropout_ratio = 0.2, # % of inputs dropout
+                   hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                   balance_classes = TRUE, 
+                   hidden = c(50,50,50), # three layers of 50 nodes
+                   epochs = 100) # max. no. of epochs
+
+perf <- h2o.performance(bc_model, test_data)
+bc_conf <- h2o.confusionMatrix(perf)
+perf
+
+bc_conf
+```
+
+Confussion matrix classifications - benign = 2 and malignant = 4. While results are not always consistent for each run using the h2o model, there usually seems to be about 4 records that are misclassified for a correct classification percentage of 96.83.<br>
+
+Let's change the call parameters for the h2o function to see how it affects the results. We will use values for the nodes of 10, 20, 30, 40, and 50, for layers we will use 1, 2, and 3 layers, and finally we will use input dropout ratios of 0.1, 0.2, 0.3, 0.4, and 0.5. These will be tested in all combinations and the results stored for a total of 75 different combinations of tests. <br>
+
+```{r}
+n_run <- 5 # set 5 runs for different node values
+hidden_nodes <- 10 # initial number of nodes
+
+## Create a results summary data frame to store the final error rates
+res_sum <- data.frame(hid_nodes = NA, drop_rat = NA, Train_1 = NA, Test_1 = NA, Train_2 = NA, Test_2 = NA, Train_3 = NA, Test_3 = NA)
+
+## First loop for 5 loops for the number of nodes 
+for (n in 1:n_run) {
+  
+  ## Second loop for 5 loops with input dropout rates of 0.1, 0.2, 0.3, 0.4, and 0.5. 
+  n_drop <- 5
+  for (m in 1:n_drop){
+    
+    ## Build the model for 1 layer
+    bc_model1 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                     y = 10,   # column number for label
+                     training_frame = train_data, # training data
+                     activation = "TanhWithDropout", # or 'Tanh'
+                     input_dropout_ratio = (m/10), # % of inputs dropout
+                     hidden_dropout_ratios = c(0.5), # % for nodes dropout
+                     balance_classes = TRUE, 
+                     hidden = c(hidden_nodes), # one layers of nodes
+                     epochs = 100) # max. no. of epochs
+
+    ## Find the performance of the model and get the confusion matrix
+    perf <- h2o.performance(bc_model1, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model1, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test  <- h2o.predict(bc_model1, test_data)$predict
+    yhat_test  <- as.factor(as.matrix(yhat_test))
+
+    ## Store Results for 1 layer
+    res_sum[(5*(n-1) + m), 1] <- hidden_nodes
+    res_sum[(5*(n-1) + m), 2] <- m/10
+    res_sum[(5*(n-1) + m), 3] <- round(confusionMatrix(yhat_train, 
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 4] <- round(confusionMatrix(yhat_test, 
+                                                       bc_test_labels)$overall[1], 4)
+    
+    ## Do the same thing for 2 layers
+    bc_model2 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                       y = 10,   # column number for label
+                       training_frame = train_data,
+                       activation = "TanhWithDropout", # or 'Tanh'
+                       input_dropout_ratio = (m/10), # % of inputs dropout
+                       hidden_dropout_ratios = c(0.5,0.5), # % for nodes dropout
+                       balance_classes = TRUE, 
+                       hidden = c(hidden_nodes,hidden_nodes), # two layers of nodes
+                       epochs = 100) # max. no. of epochs
+
+    ## Using the DNN model for predictions
+    bc_predict <- h2o.predict(bc_model2, test_data)
+
+    ## Converting H2O format into data frame
+    h2o_predict <- as.data.frame(bc_predict)
+
+    perf <- h2o.performance(bc_model2, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model2, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test  <- h2o.predict(bc_model2, test_data)$predict
+    yhat_test  <- as.factor(as.matrix(yhat_test))
+
+    ## Add Results for 2 layers
+    res_sum[(5*(n-1) + m), 5] <- round(confusionMatrix(yhat_train, 
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 6] <- round(confusionMatrix(yhat_test, 
+                                                       bc_test_labels)$overall[1], 4)
+    
+    
+    ## Run the model for 3 hidden layers
+    bc_model3 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                       y = 10,   # column number for label
+                       training_frame = train_data,
+                       activation = "TanhWithDropout", # or 'Tanh'
+                       input_dropout_ratio = (m/10), # % of inputs dropout
+                       hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                       balance_classes = TRUE, 
+                       hidden = c(hidden_nodes,hidden_nodes,hidden_nodes), #3 layers of nodes
+                       epochs = 100) # max. no. of epochs
+
+    perf <- h2o.performance(bc_model3, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model3, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test <- h2o.predict(bc_model3, test_data)$predict
+    yhat_test <- as.factor(as.matrix(yhat_test))
+
+    ## Store Results for 3 layers
+    res_sum[(5*(n-1) + m), 7] <- round(confusionMatrix(yhat_train, 
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 8] <- round(confusionMatrix(yhat_test, 
+                                                       bc_test_labels)$overall[1], 4)
+  }
+  
+  ## Increase the number of hidden nodes to use
+  hidden_nodes <- hidden_nodes + 10
+}
+```
+
+### 80/20 Results
+
+Look at the results of the 75 different runs.
+```{r}
+## Print out the results
+res_sum
+```
+
+The results matrix indicates the values used for the number of hidden nodes, which are the same for each layer, the input dropout ratio, and the percentage of correctly classified data records results for the training and test data sets for 1, 2, and 3 layers, labeled train_1 and test_1 for 1 layer, train_2 and test_2 for 2 layers, and train_3 and test_3 for 3 layers.<br><br>
+
+The results are not consistent with different compilations and runs of the program, even with a seed set. The training results for percentage of correct classifications is always higher than the testing results. This could indicate that the model is overfitted. We would expect the training results to be better than the testin results. For the testing data results, the value of 0.9683 indicates 4 records were misclassified, 0.9603 indicates 5 records misclassified, and 0.9524 indicates 6 records were misclassified with the most common value for the percentage of correct classifications being 96.03%. We would like to be able to say that the higher percentage of correct classifications occurs with more hidden layers, more nodes, or specific input dropout ratios, however this is not the case.  There does not appear to be any consistency in where these values appear in the results matrix. The variance of the call parameters seems to have no discernable effect on the outcome.<br><br>
+
+## Build 70/30 Model
+
+We can see if a different split in the training vs testing data has an effect on the results. This time we will use 70% for the training and 30% for the test. <br>
+
+```{r}
+set.seed(3465) 
+ind <- sample(2, nrow(dat), replace=TRUE, prob=c(0.7, 0.3)) 
+## use the array, ind, to define the training and test sets 
+bc_train <- dat[ind == 1, 1:10] 
+dim(bc_train)
+
+bc_test <- dat[ind == 2, 1:10] 
+dim(bc_test)
+
+bc_train_labels <- dat[ind == 1, 10] 
+bc_test_labels <- dat[ind == 2, 10]
+```
+
+We have 490 records in the training data set and 193 records in the testing set with 83. <br>
+
+Put data into h2o data type and ensure class is set as a factor.
+
+```{r}
+train_data <- as.h2o(bc_train)
+train_data[, 10] <- as.factor(train_data[, 10])
+
+test_data <- as.h2o(bc_test)
+test_data[, 10] <- as.factor(test_data[, 10])
+```
+
+Look at a summary of the test and train datasets.<br>
+
+```{r}
+summary(train_data)
+summary(test_data)
+```
+
+We have 490 records in the training data set with 320 records in class 2 and 170 records in class 4, and 193 records in the testing set with 124 records in class 2 and 69 records in class 4. <br>
+
+```{r}
+n_run <- 5 # set 5 runs for different node values
+hidden_nodes <- 10 # initial number of nodes
+
+## Create a results summary data frame to store the final error rates
+res_sum <- data.frame(hid_nodes = NA, drop_rat = NA, Train_1 = NA, Test_1 = NA, Train_2 = NA, Test_2 = NA, Train_3 = NA, Test_3 = NA)
+
+## First loop for 5 loops for the number of nodes 
+for (n in 1:n_run) {
+  
+  ## Second loop for 5 loops with input dropout rates of 0.1, 0.2, 0.3, 0.4, and 0.5. 
+  n_drop <- 5
+  for (m in 1:n_drop){
+    
+    ## Build the model for 1 layer
+    bc_model1 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                     y = 10,   # column number for label
+                     training_frame = train_data, # training data
+                     activation = "TanhWithDropout", # or 'Tanh'
+                     input_dropout_ratio = (m/10), # % of inputs dropout
+                     hidden_dropout_ratios = c(0.5), # % for nodes dropout
+                     balance_classes = TRUE, 
+                     hidden = c(hidden_nodes), # one layers of nodes
+                     epochs = 100) # max. no. of epochs
+
+    ## Find the performance of the model and get the confusion matrix
+    perf <- h2o.performance(bc_model1, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model1, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test  <- h2o.predict(bc_model1, test_data)$predict
+    yhat_test  <- as.factor(as.matrix(yhat_test))
+
+    ## Store Results for 1 layer
+    res_sum[(5*(n-1) + m), 1] <- hidden_nodes
+    res_sum[(5*(n-1) + m), 2] <- m/10
+    res_sum[(5*(n-1) + m), 3] <- round(confusionMatrix(yhat_train,
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 4] <- round(confusionMatrix(yhat_test,
+                                                       bc_test_labels)$overall[1], 4)
+    
+    ## Do the same thing for 2 layers
+    bc_model2 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                       y = 10,   # column number for label
+                       training_frame = train_data,
+                       activation = "TanhWithDropout", # or 'Tanh'
+                       input_dropout_ratio = (m/10), # % of inputs dropout
+                       hidden_dropout_ratios = c(0.5,0.5), # % for nodes dropout
+                       balance_classes = TRUE, 
+                       hidden = c(hidden_nodes,hidden_nodes), # two layers of nodes
+                       epochs = 100) # max. no. of epochs
+
+    ## Using the DNN model for predictions
+    bc_predict <- h2o.predict(bc_model2, test_data)
+
+    ## Converting H2O format into data frame
+    h2o_predict <- as.data.frame(bc_predict)
+
+    perf <- h2o.performance(bc_model2, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model2, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test  <- h2o.predict(bc_model2, test_data)$predict
+    yhat_test  <- as.factor(as.matrix(yhat_test))
+
+    ## Add Results for 2 layers
+    res_sum[(5*(n-1) + m), 5] <- round(confusionMatrix(yhat_train,
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 6] <- round(confusionMatrix(yhat_test,
+                                                       bc_test_labels)$overall[1], 4)
+    
+    
+    ## Run the model for 3 hidden layers
+    bc_model3 <- 
+      h2o.deeplearning(x = 1:9,  # column numbers for predictors
+                       y = 10,   # column number for label
+                       training_frame = train_data,
+                       activation = "TanhWithDropout", # or 'Tanh'
+                       input_dropout_ratio = (m/10), # % of inputs dropout
+                       hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                       balance_classes = TRUE, 
+                       hidden = c(hidden_nodes,hidden_nodes,hidden_nodes), # 3 layers of nodes
+                       epochs = 100) # max. no. of epochs
+
+    perf <- h2o.performance(bc_model3, test_data)
+    h2o.confusionMatrix(perf)
+  
+    ## Evaluate performance
+    yhat_train <- h2o.predict(bc_model3, train_data)$predict
+    yhat_train <- as.factor(as.matrix(yhat_train))
+    yhat_test <- h2o.predict(bc_model3, test_data)$predict
+    yhat_test <- as.factor(as.matrix(yhat_test))
+
+    ## Store Results for 3 layers
+    res_sum[(5*(n-1) + m), 7] <- round(confusionMatrix(yhat_train, 
+                                                       bc_train_labels)$overall[1], 4)
+    res_sum[(5*(n-1) + m), 8] <- round(confusionMatrix(yhat_test, 
+                                                       bc_test_labels)$overall[1], 4)
+  }
+  
+  ## Increase the number of hidden nodes to use
+  hidden_nodes <- hidden_nodes + 10
+}
+```
+
+
+### 70/30 Results
+
+```{r}
+## Print out the results
+res_sum
+```
+
+Again, the results are not consistent with different compilations and runs of the program, even with a seed set. The following chart shows the number misclassified and the overall rate of correct classifications for the most common results.
+
+| Number Misclassified| Percent Correct |
+|---|---|
+|5|97.41|
+|6|96.89|
+|7|96.37|
+|8|95.85|
+|9|95.34|
+
+The above values are the ones that appear most often in the results matrix with 0.9637 and 0.9585 being the most common. When comparing this data split to the previous 80/20 split, the most common result is 7 data points incorrectly classified vs 5 data points in the 80/20 split. The most common percentage of correct classifications is higher in the 70/30 split, 96.37% vs 96.03%, even though the number of misclassifications is higher because there are more records being classified.<br>
+
+## Conclussion
+
+It would be preferable to be able to say that a specific number of layers, input drop out ratio, number of nodes, or training vs testing data split would yield significantly better results. This is not the case with the parameters used for this testing. It is possible that the model is overfitted since the training results are better than the testing results, however the difference is not large. If the model is overfitted even at the lowest fit parameters used, it could explain why the accuracy did not change significantly when the parameters were changed. The correctly classified percentage also never reached 100%. There are many other variations of deep learning parameters and training/testing splits that could be analyzed to determine if the results could be improved. The parameters could be changed so that the model does not result in overfitting. It could also be that a few data points are so anomalous that the results will never get to 100% as long as they are included. Further analysis would include determining the specific records being misclassified and determining if they are the same records in all cases. If they are the same records, if it can be determined that they have specific characteristics that can be called out and always identified, then these specific records could be flagged and recieve special handling.
