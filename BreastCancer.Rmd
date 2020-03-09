@@ -1,5 +1,5 @@
 ---
-title: "MSDS 662 Week 8"
+title: "Breast Cancer Classification"
 author: "Cheryl Hoffer"
 date: "April 28, 2019"
 output:
@@ -13,7 +13,7 @@ output:
 
 ##Project Description
 
-Use the Wisconsin Breast Cancer data set found at https://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+(Original) and use deep learning from H2o package to train your data set and classify images as benign or malignant. Investigate the prediction performance on multiple runs using H2o package and experimenting by varying parameters such as numbers of layers, numbers of nodes, etc.,).<br>
+Uses the Wisconsin Breast Cancer data set found at https://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+(Original) and use deep learning from H2o package to traint and classify images as benign or malignant. Investigates the prediction performance on multiple runs using H2o package and experimenting by varying parameters such as numbers of layers, numbers of nodes, etc.,).<br>
 
 
 Import the libraries that will be needed.<br>
