@@ -1,0 +1,358 @@
+---
+title: "Predicting Abalone Ages"
+author: "Cheryl Hoffer"
+date: "June 19, 2019"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Description
+
+Abalone data set: https://archive.ics.uci.edu/ml/datasets/Abalone <br>
+Objective: to predict the age in years of abalone shells (rings) using physical measurements such as length diameter, whole weight, etc. <br>
+
+
+Get required libraries.
+```{r message=FALSE, include=FALSE}
+library(caret)
+library(e1071) # svm
+library(C50) # decision trees
+library(gmodels) #CrossTable()
+library(nnet) # nnet
+library(class) # knn
+library(Hmisc)
+library(BBmisc) # for normalize
+library(randomForest)
+library(randomForestExplainer)
+library(pls) # for cvsegments
+library(LiblineaR)
+```
+
+### The Data
+
+We are trying to predict the age of the abalone. The data we are given is as follows:
+
+|Name|		Data Type	| Units	|Description|
+|----|		---------	|-----	|-----------|
+|	Sex	|	nominal			|  |M, F, and I (infant)|
+|	Length	|	continuous	|mm	|Longest shell measurement|
+|	Diameter|	continuous	|mm	|perpendicular to length|
+|	Height	|	continuous	|mm	|with meat in shell|
+|	Whole weight	|continuous	|grams	|whole abalone|
+|	Shucked weight|	continuous	|grams	|weight of meat|
+|	Viscera weight|	continuous	|grams	|gut weight (after bleeding)|
+|	Shell weight	|continuous	|grams	|after being dried|
+|	Rings	|	integer	|		|+1.5 gives the age in years|
+
+Read in the data, assign labels, and look at the data.<br>
+
+```{r}
+## read in the abalone data set
+ab_data <- read.csv("abalone.data", header=F, na.string='?')
+## assign headers for the variables
+colnames(ab_data) <- c("Sex", "Length", "Diameter", "Height", "Whole_weight", "Shucked_weight", "Viscera_weight", "Shell_weight", "Rings")
+## Look at the data to see what we have and check for null or out of place values
+head(ab_data)
+str(ab_data)
+summary(ab_data)
+```
+
+There are no nulls in the data set but there is still some data manipulation/clean up that needs to be done to get the data ready for analysis. <br>
+First, we will assign the data set to a new data set so the oringinal data set is not corrputed. <br>
+We want to determine the age of the abalone, however the closest variable we have is rings, which researchers have determined is likely the age if we add 1.5, so we will create a new variable, Age which will be rings + 1.5. <br>
+Having the Sex variable as a factor gave us a count of the occurance for each entry but the Sex variable is not a factor so we will turn that back to a variable. We will then assign numeric values for the characters, 1 for Infant, 2 for Female, and 3 for Male, and make sure the Sex variable is a numeric.<br>
+We will then look at the data set to ensure the changes were as expected.<br>
+
+```{r}
+ab1_data <- ab_data # assign original data set to a new dataset
+ab1_data$Age <- ab1_data$Rings + 1.5 #create a new variable 'Age'
+
+## change Sex variable from factor to character
+ab1_data$Sex <- as.character(ab1_data$Sex)
+
+## replace the character values with representative numbers
+ab1_data$Sex <- gsub('I', '1', ab1_data$Sex)
+ab1_data$Sex <- gsub('F', '2', ab1_data$Sex)
+ab1_data$Sex <- gsub('M', '3', ab1_data$Sex)
+## make the variable numeric
+ab1_data$Sex <- as.numeric(ab1_data$Sex)
+
+## look at the data set to ensure everything is as expected
+summary(ab1_data)
+dim(ab1_data)
+```
+
+The values for age range from 2.5 to 10.5. Classification by age will work better if there are fewer catagories so we will reset the age values to young for ages 0-7, adult for ages 7.5-12, and old for ages 12.5 and greater. Age will be set as a factor variable and Rings will be removed since it has now been replaced by Age. We will again look at the data to confirm the changes are as expected. <br>
+
+```{r fig.height = 12, fig.width = 12}
+ab1_data$Age[(ab1_data$Rings + 1.5) <= 7] <- 1  # young
+ab1_data$Age[((ab1_data$Rings + 1.5) > 7) & ((ab1_data$Rings + 1.5) <= 12)] <- 2 #adult
+ab1_data$Age[(ab1_data$Rings + 1.5) > 12] <- 3  # old
+ab1_data$Age <- as.factor(ab1_data$Age) #set as factor
+
+ab1_data <- subset(ab1_data, select = -Rings) # remove Rings variable
+ 
+summary(ab1_data)
+dim(ab1_data)
+plot(ab1_data)
+```
+
+We now have a data set of 4177 records with 8 predictor variables, one response variable, Age, of which there are three classes, and the variable Rings has been removed. There are no null values. We can also see from the plot of the variables that there is a lot of correlations between them. This would be expected as several are a variation of weight and several others size measurements, all of which would be expected to increase together in a proportional manner. We can also look at the variables' possible correlations to Age. All should increase with age. An increase in the minimum value can easily be seen for length and diameter. We can also see that as age increases, the range for each variable increases. We shall see if these variables can be used to accurately classify the abalone by age group. <br>
+
+### Preparing the Test and Train Datasets
+
+Create training and test datasets and create a dataframe for storing results for comparisons.We will set a seed so that the split of data will be consistent across runs and use a 70% training and 30% testing split for the data. <br>
+
+```{r}
+## Create a dataframe for storing the results from the models.
+res_sum <- data.frame(model = NA, prec = NA, recall = NA, fmeas = NA, accuracy = NA, error = NA)
+res_idx <- 1 # index for results
+
+set.seed(1234) 
+ind <- sample(2, nrow(ab1_data), replace=TRUE, prob=c(0.7, 0.3)) 
+# use the array, ind, to define the training and test sets 
+ab_Train <- ab1_data[ind==1, 1:9]  # get the train dataset
+dim(ab_Train)                       # look at dimensions of the train dataset
+ab_Test <- ab1_data[ind==2, 1:8]    # get the test dataset
+dim(ab_Test)                           # Look at dimensions of the test dataset
+ab_TrainLabels <- ab1_data[ind==1, 9] # save training labels
+ab_TestLabels <- ab1_data[ind==2, 9]  # save testing labels
+table(ab_TrainLabels)                  # distribution of training factors
+table(ab_TestLabels)                   # distribution of testing factors
+```
+
+### SVM
+
+The first classification method we will use is SVM. Using the linear kernel has yielded the most accurate results so we will look at that.
+
+```{r}
+## build model using training dataset
+svm.model <- svm(Age~., data=ab_Train, kernel="linear", cost=100) 
+## predict results of test dataset
+svm.pred <- predict(svm.model, ab_Test) 
+
+## display results of the model
+summary(svm.model)
+## display confusion matrix for the test dataset results
+confusionMatrix(table(svm.pred, ab_TestLabels))
+
+## calculate and store the precision, recall, and fmeasure for this run  
+res_sum[res_idx, 1] <- "SVM"
+res_sum[res_idx, 2] <- sum(as.numeric(svm.pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(svm.pred))
+res_sum[res_idx, 3] <- sum(as.numeric(svm.pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(ab_TestLabels))
+res_sum[res_idx, 4] <- confusionMatrix(svm.pred, ab_TestLabels)$byClass[7]
+res_sum[res_idx, 5] <- 0.7634
+res_sum[res_idx, 6] <- 0.2366
+res_idx <- res_idx + 1
+```
+
+The SVM model with the kernel set to linear and cost = 100 produced the best results giving an accuracy of 0.7634. This is better than accuracy for the other kernel types, radial - 0.761, polynomial - 0.7341, and sigmoid - 0.5602. An accuracy of 0.7634 gives and error rate of 0.2366 or 23.66%. We would like better success with the classifications. Let's look at another method.  We have saved the values for precision, recall, f-statistic, accuracy, and error and will look at these later.<br>
+
+### Random Forest
+
+The next method we will look at is random forest. We will build the model and look at the model, then use the model to predict the results for the training data.<br>
+
+```{r}
+# Random Forest model creation for abalone data
+fit <- randomForest (Age~., data=ab_Train) 
+print(fit) # view results 
+```
+
+The random forest model has an error rate estimate of 25.23%. This predicted error rate is worse than the result for SVM. Let's use the model to make predictions using the test data set and determine the actual error rate. <br>
+
+```{r}
+## make predictions
+ab_rfpred <- predict(fit, ab_Test, type="response")
+table(observed = ab_TestLabels, predicted = ab_rfpred)
+
+## calculate and store the precision, recall, and fmeasure for this run  
+res_sum[res_idx, 1] <- "RF"
+res_sum[res_idx, 2] <- sum(as.numeric(ab_rfpred) & as.numeric(ab_TestLabels)) / sum(as.numeric(ab_rfpred))
+res_sum[res_idx, 3] <- sum(as.numeric(ab_rfpred) & as.numeric(ab_TestLabels)) / sum(as.numeric(ab_TestLabels))
+res_sum[res_idx, 4] <- confusionMatrix(ab_rfpred, ab_TestLabels)$byClass[7]
+res_sum[res_idx, 5] <- 0.7659
+res_sum[res_idx, 6] <- 0.2341
+res_idx <- res_idx + 1
+```
+
+Using the confusion matrix, we have 32 + 632 + 278 = 943 records out of 1230 correctly classified for an accuracy of 0.7659 and an error rate of 23.41% which is better than the model predicted and also better than the SVM method. We have saved the values for precision, recall, f-statistic, accuracy, and error and will look at these later. <br><br>
+
+
+
+### SVM 10 Fold Cross Validation
+
+The results we achieved for the previous methods were not as good as we would like. We will use the same methods but add 10 fold cross validation to see if it increases the accuracy of our classifications.<br> 
+
+```{r}
+# define training control
+train_control <- trainControl(method="cv", number=10)
+# train the model
+svm10_model <- train(Age~., data=ab_Train, trControl=train_control, method="svmLinear")
+# summarize results
+print(svm10_model)
+```
+
+The model had a classification accuracy of 0.7506. This is not as good as the accuracy of 0.7634 achieved by making predictions using the original model. Let's run the predictions using this model to see the actual results.<br>
+
+```{r}
+# make predictions
+
+svm10_pred <- predict(svm10_model, ab_Test)
+# summarize results
+#predictions
+str(svm10_pred)
+confusionMatrix(svm10_pred, ab_TestLabels)
+
+## calculate and store the precision, recall, and fmeasure for this run  
+res_sum[res_idx, 1] <- "SVM 10 fold"
+res_sum[res_idx, 2] <- sum(as.numeric(svm10_pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(svm10_pred))
+res_sum[res_idx, 3] <- sum(as.numeric(svm10_pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(ab_TestLabels))
+res_sum[res_idx, 4] <- confusionMatrix(svm10_pred, ab_TestLabels)$byClass[7]
+res_sum[res_idx, 5] <- 0.7610
+res_sum[res_idx, 6] <- 0.2390
+res_idx <- res_idx + 1
+```
+
+The correct classifications were 31 + 663 + 242 = 936 out of 1230 records for an accuracy of 0.7610 and error of 0.2390. This is less accurate than the 0.7634 accuracy acheived with the SVM classification without cross validation. We have saved the values for precision, recall, f-statistic, accuracy, and error and will look at these later. <br><br>
+
+
+### Random Forest 10 Fold Cross validation
+
+We did not see an improvement in accuracy using cross validation for SVM. We will try cross validation for the random forest method and see if we get better results.<br> 
+
+```{r}
+# results have been varying - use a seed again to try to minimize
+set.seed(1234) 
+# define training control
+train_control <- trainControl(method="cv", number=10)
+# train the model
+rf10_model <- train(Age~., data=ab_Train, trControl=train_control, method="cforest")
+# summarize results
+print(rf10_model)
+```
+
+Using cross validation for random forest, the best results were 0.7512914 for the second model. Again, this is less accurate than random forest without cross validation. We will use the model and get the predictions to see if the result is better than the model result. <br>
+
+```{r}
+# make predictions
+rf10_pred <- predict(rf10_model, ab_Test)
+# summarize results
+confusionMatrix(rf10_pred, ab_TestLabels)
+
+## calculate and store the precision, recall, and fmeasure for this run  
+res_sum[res_idx, 1] <- "RF 10 fold"
+res_sum[res_idx, 2] <- sum(as.numeric(rf10_pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(rf10_pred))
+res_sum[res_idx, 3] <- sum(as.numeric(rf10_pred) & as.numeric(ab_TestLabels)) / sum(as.numeric(ab_TestLabels))
+res_sum[res_idx, 4] <- confusionMatrix(rf10_pred, ab_TestLabels)$byClass[7]
+res_sum[res_idx, 5] <- 0.7650
+res_sum[res_idx, 6] <- 0.2350
+res_idx <- res_idx + 1
+```
+
+The cross validation method for random forest has produced predictions with an accuracy of 31+652+258 = 941 -> 0.7650. this is better than both SVM methods but not as good as random forest without cross validation.
+We have saved the values for precision, recall, f-statistic, accuracy, and error and will look at these later. <br>
+
+### Results Summary
+
+Let's look at the precision, recall, f-measure, accuracy, and error for all four runs in a single chart for ease of comparison.<br>
+
+```{r}
+res_sum
+```
+
+We can see that cross validation did not significantly increase accuracy and in the case of SVM actually decreased the prediction accuracy. The best result using accuracy as a measure was for the random forest classifier without cross validation. <br>
+Another measure of correctness for our classifications is f-measure or f-statistic. Since our data classification groups are unbalanced with 189 records as young (train:142, test:47), 2541 as adult (train:1791, test:750), and 1447 as old (train:1014, test:433), the f-measure may be a better indication of the correctness of the classifications. <br>
+The f-measure results indicate that the best classifier is SVM with 10 fold cross validation giving an f-statistic of 0.7561 vs 0.7381 for SVM, 0.7111 for RF w/validation, and 0.6957 for RF. This shows that while the accuracy decreased with cross validation, the f-statistic increased. It is possible that more folds could increase the accuracy. This would be recommended for SVM over random forest as random forest with cross validation seems to require more resources and processing time. <br>
+This data set seems particularly challenging to classify since the SVM method with a linear kernal resulted in 100% accuracy rate when used with the mushroom data set and the random forest classifier was slightly more accurate with the difficult wine data set.<br>
+
+One thing to take note of, none of the classifiers erroneously classified a young abalone as old or an old abalone as young. The distinctions between these groups seems to be clear. All errors were in relation to young/adult and adult/old. It would be interesting to look at the erronously classified records more closely to see the age ranges of the misclassified records. It is suspected that the misclassified records are likely to be those near the boundaries. The boundary for young to adult is 7 years so it is possible that the erroneous records would be in the range of 5-9 years. For adult to old the boundary is 14 so the error range could be theorized to be 12-16. Knowing this information could be helpful in determining the importance of the errors to the intended use.<br>
+It is also unknown what the intended use is for the data and how important it is that a particular age group be correct. Knowing what the incorrect classifications represent and the intended use of the data, it could be possible to adjust the boundaries to ensure that all entries for a particular age group are classified in that group. As an example, if it is important that young abalone be returned to the sea, and 5-7 year olds are regularly being classified as adults, the boundary for the young/adult age could be changed to 9 thereby assuring that the majority and possibly all young abalone properly classified and returned to the sea along with a few of the adult abalone that get misclassified classified as young.<br>
+If the data collection is to compare the harvest rates of different aged abalone over time, the misclassifications are less critical since they will persist throughout all runs of new data and the errors should be consistent.<br>
+There could be some additional information that may help classification accuracy. Records about where the abalone were harvested in relation to food supply could indicate growth rates and increase classification accuracy. If a more accurate classification is required, additional data such as this may be needed.<br>
+
+### Additional Results
+
+The best results were unsatisfactory so an attempt was made to find a method with better accuracy than the methods previously used. The following is a list of what was attempted and the results. <br><br>
+The calls for the algorithms run but not included were: <br>
+Decision Tree:  <br>
+    model <- C5.0.default(x = ab_Train[,-9], y = ab_TrainLabels, trials = 10) <br>
+    predict(model, ab_Test) <br>
+
+Neural Net: <br>
+    ab.nn <- nnet(Age ~ ., data = ab_Train,  size = 2, rang = 0.1, decay = 5e-4, maxit = 200) <br>
+    predict(ab.nn, ab_Test, type="class") <br>
+    
+knn: <br>
+    knn(train=ab_knn_Train, test=ab_knn_Test, cl=ab_TrainLabels, k=11)<br>
+    
+Normalized data:<br>
+  centered <- normalize(ab1_data[,1:8], method = "center")<br>
+
+<br>
+
+| Method | Accuracy | Error | Precision | Recall | F-stat |
+|--|--|--|--|--|--|
+| Decision tree | 0.7496 | 0.2504 | 0.4486 | 0.4322 | 0.6800 |
+| Neural net | 0.7553 | 0.2447 | 0.4423 | 0.4322 | 0.6957 |
+| knn | 0.7423 | 0.2577 | 0.4448 | 0.4322 | 0.7632 |
+| SVM normalized | 0.7634 | 0.2366 | 0.4487 | 0.4322 | 0.7381 |
+
+SVM produced one of the more accurate results so this was run again with normalized data to see if it increased accuracy. Normalizing the data for the SVM method gave the same results as the non-normalized data. None of the other methods with the function calls displayed resulted in better predictions than the methods chosen. There is a possibility that further tuning of call parameters for these functions could have resulted in more accurate classifications. Of particular note, though, is that while none of the accuracy values exceeded SVM or random forest, the f-statistic of 0.7632 for knn is greater that that measured for SVM or random forest. It may be worthwhile to investigate abalone classification using knn.<br>
+
+
+
+#### Code Appendix
+
+This is for the function calls referenced but not included.<br>
+
+DECISION TREE<br>
+model <- C5.0.default(x = ab_Train[,-9], y = ab_TrainLabels, trials = 10)<br>
+The model was build had accuracy of 81.57% with 2,404 correct out of 2,947 records.<br>
+
+pred <- predict(model, ab_Test)<br>
+Testing the model produced an accuracy rate of 74.96% with 922 records out of 1230 correctly classified.<br>
+<br>
+
+NEURAL NETWORKS<br>
+ab.nn <- nnet(Age ~ ., data = ab_Train,  size = 2, rang = 0.1, decay = 5e-4, maxit = 200)<br>
+
+pred_ab <- predict(ab.nn, ab_Test, type="class")<br>
+The neural network  produced an accuracy rate of 75.77% with 932 records out of 1230 correctly classified.<br><br>
+
+
+KNN<br>
+ab_knn_Train <- ab1_data[ind==1, 1:8]    # get the train dataset<br>
+ab_knn_Test <- ab1_data[ind==2, 1:8]    # get the test dataset<br>
+predict <- knn(train=ab_knn_Train, test=ab_knn_Test, cl=ab_TrainLabels, k=11)<br>
+CrossTable(x=ab_TestLabels, y=predict, prop.chisq=F, prop.r=F, prop.c=F, prop.t=F)<br>
+<br>
+
+SVM - NORMALIZED DATA<br>
+centered <- normalize(ab1_data[,1:8], method = "center")<br>
+centered$Age <- ab1_data$Age<br>
+
+ind <- sample(2, nrow(centered), replace=TRUE, prob=c(0.7, 0.3))<br> 
+ # use the array, ind, to define the training and test sets <br>
+ab_Train <- centered[ind==1, 1:9]  # get the train dataset<br>
+dim(ab_Train)                       # look at dimensions of the train dataset<br>
+ab_Test <- centered[ind==2, 1:8]    # get the test dataset<br>
+dim(ab_Test)                           # Look at dimensions of the test dataset<br>
+ab_TrainLabels <- centered[ind==1, 9] # save training labels<br>
+ab_TestLabels <- centered[ind==2, 9]  # save testing labels<br>
+table(ab_TrainLabels)                  # distribution of training factors<br>
+table(ab_TestLabels)                   # distribution of testing factors<br>
+<br>
+ ## build model using normalized training dataset<br>
+svm.model <- svm(Age~., data=ab_Train, kernel="linear", cost=100) <br>
+ ## predict results of test dataset<br>
+svm.pred <- predict(svm.model, ab_Test)<br> 
+<br>
