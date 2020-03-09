@@ -1,0 +1,365 @@
+---
+title: "Mushroom Classifiers"
+author: "Cheryl Hoffer"
+date: "June 2, 2019"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Project Description
+
+We will use the mushroom data set:  http://archive.ics.uci.edu/ml/datasets/Mushroom to build a classifier using SVM, experimenting with different kernels (e.g. linear SVM, Gaussian kernel SVM, and polynomial kernel SVM) to determine which kernel is appropriate for this data set. <br>
+
+We will also build a classifier using neural network, experimenting with different parameters (e.g. learning rate), and different network architecture (e.g. number of hidden nodes, activation function, hidden layer=1) to determine the best network architecture. <br>
+
+The results from the SVM and neural network are compared and summarized. <br><br>
+
+Load required libraries
+```{r, include=FALSE}
+library(VIM) # for aggr function
+library(mice) # for md.pattern
+library(forcats) # for fct_explicit_na function
+library(e1071) # svm
+library(nnet) # nnet
+library(caret) # confusionMatrix
+
+```
+
+
+##The Data and Data Preparation
+
+###The Data
+
+Attribute Information: <br>
+class: contains only 2 levels 'e' (edible) and 'p' (poisonous)<br>
+1. cap-shape: bell=b,conical=c,convex=x,flat=f, knobbed=k,sunken=s<br> 
+2. cap-surface: fibrous=f,grooves=g,scaly=y,smooth=s <br>
+3. cap-color: brown=n,buff=b,cinnamon=c,gray=g,green=r, pink=p,purple=u,red=e,white=w,yellow=y<br> 
+4. bruises?: bruises=t,no=f <br>
+5. odor: almond=a,anise=l,creosote=c,fishy=y,foul=f, musty=m,none=n,pungent=p,spicy=s <br>
+6. gill-attachment: attached=a,descending=d,free=f,notched=n <br>
+7. gill-spacing: close=c,crowded=w,distant=d <br>
+8. gill-size: broad=b,narrow=n <br>
+9. gill-color: black=k,brown=n,buff=b,chocolate=h,gray=g, green=r,orange=o,pink=p,purple=u,red=e, white=w,yellow=y<br> 
+10. stalk-shape: enlarging=e,tapering=t<br> 
+11. stalk-root: bulbous=b,club=c,cup=u,equal=e, rhizomorphs=z,rooted=r,missing=? <br>
+12. stalk-surface-above-ring: fibrous=f,scaly=y,silky=k,smooth=s <br>
+13. stalk-surface-below-ring: fibrous=f,scaly=y,silky=k,smooth=s <br>
+14. stalk-color-above-ring: brown=n,buff=b,cinnamon=c,gray=g,orange=o, pink=p,red=e,white=w,yellow=y <br>
+15. stalk-color-below-ring: brown=n,buff=b,cinnamon=c,gray=g,orange=o, pink=p,red=e,white=w,yellow=y <br>
+16. veil-type: partial=p,universal=u <br>
+17. veil-color: brown=n,orange=o,white=w,yellow=y <br>
+18. ring-number: none=n,one=o,two=t <br>
+19. ring-type: cobwebby=c,evanescent=e,flaring=f,large=l, none=n,pendant=p,sheathing=s,zone=z <br>
+20. spore-print-color: black=k,brown=n,buff=b,chocolate=h,green=r, orange=o,purple=u,white=w,yellow=y <br>
+21. population: abundant=a,clustered=c,numerous=n, scattered=s,several=v,solitary=y <br>
+22. habitat: grasses=g,leaves=l,meadows=m,paths=p, urban=u,waste=w,woods=d<br>
+<br>
+Read the data into a data set to prepare it for analysis. Assign labels to the columns. Look at the dataset and check for missing values.<br>
+
+```{r}
+## read in data
+tmush_data <- read.csv("mushroom.data", header=F, na.string='?')
+## add column labels
+colnames(tmush_data) <- c("class", "cap.shape", "cap.surface", "cap.color", "bruises", "odor", "gill.attachment", "gill.spacing", "gill.size", "gill.color", "stalk.shape", "stalk.root", "stalk.surface.above.ring", "stalk.surface.below.ring", "stalk.color.above.ring", "stalk.color.below.ring", "veil.type", "veil.color", "ring.number", "ring.type", "spore.print.colo", "population", "habitat")
+## look at data
+head(tmush_data)
+## summarize the data
+summary(tmush_data)
+```
+
+###Data Preparation
+
+We can see from the summary that veil.type values are all the same. This will have no effect on the results if we remove the variable and removing it will decrease the compexity. Look at the data again after removal. Then change the class to values 0 for poisonous and 1 for edible, make it a factor type, and again look at a summary of the data.
+
+```{r}
+## remove veil type because the values are all the same
+mush_data <- tmush_data[, -17]
+
+head(mush_data)
+mush_data$class <- gsub('e', '1', mush_data$class)
+mush_data$class <- gsub('p', '0', mush_data$class)
+
+mush_data$class <- as.numeric(mush_data$class)
+mush_data$class <- as.factor(mush_data$class)
+summary(mush_data)
+dim(mush_data)
+```
+
+There are 8124 records of 22 variables, one of which is the response variable. The stalk.root variable has 2480 null values. There are no other variables with null values. Let's look at some maps of the nulls in the data set to confirm our findings.
+
+```{r}
+md.pattern(mush_data)
+
+aggr_plot <- aggr(mush_data, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(mush_data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+We have confirmed that all missing values are in the stalk.root variable. We will replace the NAs with 'm' for missing and look at a summary of the data set to confirm they have been replaced.
+
+```{r}
+mush_data$stalk.root <- fct_explicit_na(mush_data$stalk.root, na_level = "m")
+summary(mush_data)
+```
+
+###Create Training and Testing Sets
+
+The summary of the data set now shows that there are no null values. We can continue and separate the data into training and testing dataset. We start by setting a seed value so that our split is consistent for any subsequent runs of the program. We then split the data into 70% training and 30% testing datasets. We look at the percentage of each class in the testing and training data sets to ensure a good split of the data.
+
+```{r}
+set.seed(1234) 
+ind <- sample(2, nrow(mush_data), replace=TRUE, prob=c(0.7, 0.3)) 
+# use the array, ind, to define the training and test sets 
+mush_Train <- mush_data[ind==1, 1:22]  # get the train dataset
+dim(mush_Train)                       # look at dimensions of the train dataset
+mush_Test <- mush_data[ind==2, 2:22]    # get the test dataset
+dim(mush_Test)                           # Look at dimensions of the test dataset
+mush_TrainLabels <- mush_data[ind==1, 1] # save training labels
+mush_TestLabels <- mush_data[ind==2, 1]  # save testing labels
+table(mush_TrainLabels)                  # distribution of training factors
+table(mush_TestLabels)                   # distribution of testing factors
+```
+
+In both datasets, there are slightly fewer poisonous mushrooms than edible mushrooms. This looks like a good data split.
+
+##SVM Method
+
+We will now build a classifier using SVM. We will use different kernels such as radial, linear, polynomial, and sigmoid. We will also use different values for the cost parameter, compare the results, and identify the method with the most accurate results.<br>
+
+###Radial Kernel
+
+First try the radial kernel method. We will run this three times with values of 1, 10, and 100 for the cost parameter. We will only show the results for cost = 100.
+
+```{r}
+## build model using training dataset
+svm.model <- svm(class~., data=mush_Train, kernel="radial", cost=100) 
+## predict results of test dataset
+svm.pred <- predict(svm.model, mush_Test) 
+
+## display results of the model
+summary(svm.model)
+## display confusion matrix for the test dataset results
+table(svm.pred, mush_TestLabels)
+```
+
+###Linear Kernel
+
+Next we will try the linear Kernel method. We will run this three times with values of 1, 10, and 100 for the cost parameter. We will only show the results for cost = 100. Since the linear gave us the best results, we will see how long it takes to run this method.
+
+```{r}
+svm.start.time <- Sys.time() # set start time
+
+## build model using training dataset
+#svm.model <- svm(class~., data=mush_Train, kernel="linear", cost=100) 
+svm.model <- svm(class~., data=mush_Train, kernel="linear") 
+
+## predict results of test dataset
+svm.pred <- predict(svm.model, mush_Test) 
+
+svm.end.time <- Sys.time() # set end time
+svm.time.taken <- svm.end.time - svm.start.time # find run time duration
+
+## display results of the model
+summary(svm.model)
+## display confusion matrix for the test dataset results
+table(svm.pred, mush_TestLabels)
+```
+
+###Polynomial Kernel
+
+Now we will try the polynomial kernel method. We will run this three times with values of 1, 10, and 100 for the cost parameter. We will only show the results for cost = 100. 
+
+```{r}
+## build model using training dataset
+svm.model <- svm(class~., data=mush_Train, kernel="polynomial", cost=100) 
+## predict results of test dataset
+svm.pred <- predict(svm.model, mush_Test) 
+
+## display results of the model
+summary(svm.model)
+## display confusion matrix for the test dataset results
+table(svm.pred, mush_TestLabels)
+```
+
+###Sigmoid Kernel
+
+Finally we will try the sigmoid kernel method. We will run this three times with values of 1, 10, and 100 for the cost parameter. We will only show the results for cost = 100. 
+
+```{r}
+## build model using training dataset
+svm.model <- svm(class~., data=mush_Train, kernel="sigmoid", cost=100) 
+## predict results of test dataset
+svm.pred <- predict(svm.model, mush_Test) 
+
+## display results of the model
+summary(svm.model)
+## display confusion matrix for the test dataset results
+table(svm.pred, mush_TestLabels)
+```
+
+###SVM Classification Summary
+
+We have produced a table showing the results for each of the different kernel methods and for each of the cost parameter values of 1, 10, and 100.<br>
+
+|method|cost|p-correct|p-incorrect|%error|e-correct|e-incorrect|%error|overall %error|
+|--|--|--|--|--|--|--|--|--|
+|radial|1|1147|6|0.52|1242|0|0|0.25|
+|linear|1|1153|0|0|1242|0|0|0|
+|polynomial|1|966|187|16.22|1235|7|0.56|8.10|
+|sigmoid|1|1116|37|3.21|1242|0|0|1.54|
+|radial|10|1149|4|0.35|1242|0|0|0.17|
+|linear|10|1153|0|0|1242|0|0|0|
+|polynomial|10|1141|12|1.04|1242|0|0|0.50|
+|sigmoid|10|1148|5|0.43|1242|0|0|0.21|
+|radial|100|1153|0|0|1242|0|0|0|
+|linear|100|1153|0|0|1242|0|0|0|
+|polynomial|100|1148|5|0.43|1242|0|0|0.21|
+|sigmoid|100|1153|0|0|1242|0|0|0|
+
+We can see that the linear kernel method always classified all the mushrooms correctly. The next best method was radial, followed by sigmoid, and the worst method was polynomial which was the only method that also incorrectly classified edible mushrooms. None of the methods except linear got all the classifications correct until cost was set to 100, and then radial and sigmoid also correctly classified all mushrooms. The best kernel parameter in linear since this caused all mushrooms to be correctly classified for all thre values of cost. When lives are on the line and mushrooms must be correctly classified, use linear for the kernel parameter value. <br>
+
+##ANN Method
+
+Build a classifier using neural network. Experiments with different parameters (e.g. learning rate), and different network architecture (e.g. number of hidden nodes, activation function, hidden layer=1). From your experiments, what is your best network architecture? What is the accuracy results? Summarize your findings.<br>
+
+###Data Preparation
+
+Neural networks require numerical data so our dataset containing characters will need to be converted to numeric. If we just change the columns to numeric, their values will automatically convert to numbers for us and we do not need to worry about any explicit conversions. It is good to confirm that there are still the correct number of distinct variable values with the correct number of entries assigned to each variable value.<br>
+
+```{r}
+## make copy of data set to turn into numbers
+int_mush <- mush_data
+## make each column type numeric
+for (i in 2:22) {
+  int_mush[,i] <- as.numeric(int_mush[, i])
+}
+## make sure the class variable is of type factor
+int_mush$class <- as.factor(int_mush$class)
+
+## confirm correct modifications to the data
+summary(int_mush)
+```
+
+The number of distinct values for each variable is the same as for the original dataset and the number of occurrances of each value corresponds to the original data. Our conversion to numeric was successful.<br>
+
+###Create Training and Testing Sets
+
+Create a training and testing dataset for the ANN model in the same manner as was done for the SVM model.
+
+```{r}
+set.seed(1234) 
+ind <- sample(2, nrow(int_mush), replace=TRUE, prob=c(0.7, 0.3)) 
+# use the array, ind, to define the training and test sets 
+mush_Train <- int_mush[ind==1, 1:22]  # get the train dataset
+dim(mush_Train)                       # look at dimensions of the train dataset
+mush_Test <- int_mush[ind==2, 2:22]    # get the test dataset
+dim(mush_Test)                         # Look at dimensions of the test dataset
+mush_TrainLabels <- int_mush[ind==1, 1] # save training labels
+mush_TestLabels <- int_mush[ind==2, 1]  # save testing labels
+table(mush_TrainLabels)               # distribution of training factors
+table(mush_TestLabels)                  # distribution of testing factors
+```
+
+###Building and Testing the Model
+
+Use nnet and the training dataset to build a neural network model and then predict the results of the the testing dataset.  Let's try the first run using the defaults.
+
+```{r}
+mush.nn <- nnet(class ~ ., data = mush_Train, size = 2)
+
+pred_mush <- predict(mush.nn, mush_Test, type="class")
+
+nn.table = table(pred_mush, mush_TestLabels)
+confusionMatrix(nn.table)
+```
+
+The result here was 196 poisonous mushrooms incorrectly identified as edible. This is not a mistake we want to make. Let's try again setting some additional values. We will set rang (Initial random weights) to 0.1, decay (parameter for weight decay) to 5e-4, and maxit (maximum number of iterrations) to 200.
+
+```{r}
+nn.start.time <- Sys.time()
+
+mush.nn <- nnet(class ~ ., data = mush_Train, size = 2, rang = 0.1, decay = 5e-4, maxit = 200)
+
+pred_mush <- predict(mush.nn, mush_Test, type="class")
+
+nn.end.time <- Sys.time()
+nn.time.taken <- nn.end.time - nn.start.time
+
+nn.table = table(pred_mush, mush_TestLabels)
+confusionMatrix(nn.table)
+```
+
+This gave the desired results, all mushrooms were correctly classified. We can see if we still get the correct results if we lower the maximum number of iterrations to 150.
+
+```{r}
+mush.nn <- nnet(class ~ ., data = mush_Train, size = 2, rang = 0.1, decay = 5e-4, maxit = 150)
+
+pred_mush <- predict(mush.nn, mush_Test, type="class")
+
+nn.table = table(pred_mush, mush_TestLabels)
+confusionMatrix(nn.table)
+```
+
+Reducing the number of iterrations had a big impact on the results and increased the error from none to 118 mushrooms incorrectly classified as edible when they were poisonous. Again, this is not a mistake we want to make. <br>
+Let's see how important the other parameters are. We can remove rang and just use the default, which is around 0.5.
+
+```{r}
+mush.nn <- nnet(class ~ ., data = mush_Train, size = 2, decay = 5e-4, maxit = 200)
+
+pred_mush <- predict(mush.nn, mush_Test, type="class")
+
+nn.table = table(pred_mush, mush_TestLabels)
+confusionMatrix(nn.table)
+```
+
+Using the default for rang increased the number of incorrectly classified mushrooms but there were not as many errors as there were when the maximum number of iterrations was reduced.<br>
+This time, let's use the default for decay, which is zero.
+
+```{r}
+mush.nn <- nnet(class ~ ., data = mush_Train, size = 2, rang = 0.1, maxit = 200)
+
+pred_mush <- predict(mush.nn, mush_Test, type="class")
+
+nn.table = table(pred_mush, mush_TestLabels)
+confusionMatrix(nn.table)
+```
+
+Using the default value of 0 for the decay has increased the number of misclassification more than any other parameter change. The results were almost as bad as using defauls for all parameters tested when maxit is at the default value of 100. Without the decay value, increasing the number of iterrations has almost no effect. <br>
+
+###ANN Results Summary
+
+The table below shows the different combination of parameters used and the results when we used those parameters.
+
+|size|rang|decay|maxit|p-correct|p-incorrect|%error|e-correct|e-incorrect|%error|overall %error|
+|--|--|--|--|--|--|--|--|--|--|--|
+|default|default|default 0|default 100|957|196|17.00|1242|0|0|8.18|
+|2|0.1|5e-4|200|1153|0|0|1242|0|0|0|
+|2|0.1|5e-4|150|1035|118|10.23|1242|0|0|4.93|
+|2|default|5e-4|200|1091|62|5.38|1242|0|0|2.59|
+|2|0.1|default|200|959|194|16.83|1242|0|0|8.10|
+
+We see that the parameter most affecting the results was decay, followed by maxit and then rang. The results tell us that setting decay correctly is very important as well as having the correct number of maximum iterrations.<br><br>
+
+
+##Conclusion
+
+The classification of mushrooms as poisonous or edible is very important to get correct. There can be no misclassifications of poisonous mushrooms since that mistake can be deadly.<br>
+
+We could get to perfect classification results by using either the SVM or ANN method. The ANN method was more work because of the need to convert all variables to numeric and the tweeking of paramters required to get perfect results. SVM required some testing to select the optimum value for the cost parameter and to choose the corrrect kernel method to use. We can also look at how long it takes to run each of the methods. The time was measured for the perfect classification run for the SVM and ANN methods.<br>
+
+```{r}
+svm.time.taken
+nn.time.taken
+```
+
+The time it takes to run the commands varies each time they are run. On one run, SVM took 1.064083 secs which is slightly less than the 1.073043 secs taken for the ANN method. On another run, SVM took 1.086659 secs which was more than the 0.943114 secs taken for the ANN method. It does not look like any conclusions can be made regarding the run time for the two methods due to the variability of the results for time taken.<br>
+
+Given the accuracy/error results from our experiment, either SVM or ANN could be reliable for the classification of mushrooms as long as time is taken to carefully select the correct values for the parameters to acheive 100% correct classifications. The recommended method, however, would be SVM with the kernel parameter set to linear since this made no erroneous classification for all tested values for the parameter cost.
